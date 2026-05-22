@@ -23,10 +23,10 @@ def notification_center():
     # Hold down Win key
     user32.keybd_event(VK_WIN, 0, KEYEVENTF_EXTENDEDKEY, 0)
     # Press N key
-    user32.keybd_event(VK_N, 0, KEYEVENTF_EXTENDEDKEY, 0)
+    user32.keybd_event(VK_N, 0, 0, 0)
     user32.keybd_event(VK_N, 0, KEYEVENTF_KEYUP, 0)
     # Release Win key
-    user32.keybd_event(VK_WIN, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(VK_WIN, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
 
 
 def quick_settings():

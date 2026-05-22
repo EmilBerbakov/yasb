@@ -46,8 +46,8 @@ class IDesktopWallpaper(comtypes.IUnknown):
     """
     COM interface for managing desktop wallpapers in Windows 10/11.
 
-    Interface IID: {B92B56A9-8B55-4E14-9A89-0199BBB6F93B}
-    CLSID: {C2CF3110-460E-4fc1-B9D0-8A1C0C9CC4BD}
+    Interface IID: {B92B56A9-8B55-4E14-9A89-0199BBB6F93B} CLSID:
+    {C2CF3110-460E-4fc1-B9D0-8A1C0C9CC4BD}
     """
 
     _iid_ = GUID("{B92B56A9-8B55-4E14-9A89-0199BBB6F93B}")
