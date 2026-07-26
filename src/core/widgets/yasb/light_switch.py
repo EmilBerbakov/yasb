@@ -1,3 +1,8 @@
+from typing import Any
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QLabel, QLineEdit, QListWidget, QVBoxLayout
+
 from core.utils.tooltip import set_tooltip
 from core.validation.widgets.yasb.light_switch import LightSwitchConfig
 from core.widgets.base import BaseWidget
@@ -34,3 +39,28 @@ class LightSwitchWidget(BaseWidget):
         """Toggle Light Switch Options Menu"""
         print("hitting toggle menu")
         return
+
+    def _location_selection(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        title = QLabel("Seteup location")
+        title.setProperty("class", "search-head")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("Search location...")
+        search_input.setProperty("class", "search-input")
+        search_input.setMinimumWidth(280)
+        layout.addWidget(search_input)
+
+        results_list = QListWidget()
+        results_list.setProperty("class", "search-results")
+        results_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        results_list.setVisible(False)
+        layout.addWidget(results_list)
+
+        # Store results for selection
+        self._search_results: list[dict[str, Any]] = []

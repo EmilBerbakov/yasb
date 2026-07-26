@@ -24,6 +24,7 @@ class LightSwitchOptions(CustomBaseModel):
     time_switch: Literal[None, "auto", "custom"] = None
     custom_time: CustomTimeConfig = CustomTimeConfig()
     data_path: str = ""
+    cache_theme_handles: bool = True
 
 
 class LightSwitchConfig(CustomBaseModel):
