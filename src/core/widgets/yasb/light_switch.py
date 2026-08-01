@@ -34,6 +34,7 @@ class LightSwitchWidget(BaseWidget):
         self.callback_left = self.config.callbacks.on_left
         self.callback_middle = self.config.callbacks.on_middle
         self.callback_right = self.config.callbacks.on_right
+        self._search_results = []
 
     def _toggle_menu(self):
         """Toggle Light Switch Options Menu"""
