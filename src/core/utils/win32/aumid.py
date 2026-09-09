@@ -37,6 +37,15 @@ class PROPERTYKEY(ctypes.Structure):
     _fields_ = [("fmtid", GUID), ("pid", ctypes.c_uint32)]
 
 
+class BLOB(ctypes.Structure):
+    """BLOB arm of the PROPVARIANT union (propidlbase.h)."""
+
+    _fields_ = [
+        ("cbSize", wt.ULONG),
+        ("pBlobData", POINTER(ctypes.c_byte)),
+    ]
+
+
 class PROPVARIANT_UNION(ctypes.Union):
     _fields_ = [
         ("pwszVal", wt.LPWSTR),
@@ -44,6 +53,7 @@ class PROPVARIANT_UNION(ctypes.Union):
         ("ulVal", ctypes.c_uint32),
         ("uhVal", ctypes.c_uint64),
         ("boolVal", wt.VARIANT_BOOL),
+        ("blob", BLOB),
     ]
 
 
@@ -51,9 +61,9 @@ class PROPVARIANT(ctypes.Structure):
     _anonymous_ = ("data",)
     _fields_ = [
         ("vt", ctypes.c_ushort),
-        ("wReserved1", ctypes.c_ubyte),
-        ("wReserved2", ctypes.c_ubyte),
-        ("wReserved3", ctypes.c_ubyte),
+        ("wReserved1", ctypes.c_ushort),
+        ("wReserved2", ctypes.c_ushort),
+        ("wReserved3", ctypes.c_ushort),
         ("data", PROPVARIANT_UNION),
     ]
 
@@ -137,6 +147,15 @@ OpenProcess.restype = wt.HANDLE
 CloseHandle = kernel32.CloseHandle
 CloseHandle.argtypes = [wt.HANDLE]
 CloseHandle.restype = wt.BOOL
+
+kernel32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+
+kernel32.Process32FirstW.argtypes = [wt.HANDLE, POINTER(PROCESSENTRY32)]
+kernel32.Process32FirstW.restype = wt.BOOL
+
+kernel32.Process32NextW.argtypes = [wt.HANDLE, POINTER(PROCESSENTRY32)]
+kernel32.Process32NextW.restype = wt.BOOL
 
 # GetApplicationUserModelId(HANDLE, PUINT32, PWSTR)
 GetApplicationUserModelId = None  # type: ignore

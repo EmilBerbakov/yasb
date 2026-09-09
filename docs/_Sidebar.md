@@ -12,11 +12,13 @@
 - Widgets:
     - [Active Windows Title](./(Widget)-Active-Windows-Title)
     - [Applications](./(Widget)-Applications)
+    - [Audio Visualizer](./(Widget)-Audio-Visualizer)
     - [Battery](./(Widget)-Battery)
     - [Bluetooth](./(Widget)-Bluetooth)
     - [Brightness](./(Widget)-Brightness)
     - [Cava](./(Widget)-Cava)
     - [Claude Usage](./(Widget)-Claude-Usage)
+    - [Codex Usage](./(Widget)-Codex-Usage)
     - [Clock](./(Widget)-Clock)
     - [Control Center](./(Widget)-Control-Center)
     - [Copilot](./(Widget)-Copilot)
