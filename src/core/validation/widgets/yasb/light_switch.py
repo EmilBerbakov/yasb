@@ -27,9 +27,13 @@ class LightSwitchOptions(CustomBaseModel):
     cache_theme_handles: bool = True
 
 
+# class LocationSelectionCardConfig(CustomBaseModel):
+
+
 class LightSwitchConfig(CustomBaseModel):
     label: str = "{icon}"
     tooltip: bool = True
+    # location_selection_card_config: LocationSelectionCardConfig = LocationSelectionCardConfig()
     callbacks: CallbacksLightSwitchConfig = CallbacksLightSwitchConfig()
     run_after: list[str] = []
     keybindings: list[KeybindingConfig] = []

@@ -35,18 +35,24 @@ class LightSwitchWidget(BaseWidget):
         self.callback_middle = self.config.callbacks.on_middle
         self.callback_right = self.config.callbacks.on_right
         self._search_results = []
+        self.dialog = None
 
     def _toggle_menu(self):
         """Toggle Light Switch Options Menu"""
         print("hitting toggle menu")
+        self._location_selection()
         return
 
     def _location_selection(self):
+        # self.dialog = PopupWidget(
+        #         self,
+        #         self.config.
+        #         )
         layout = QVBoxLayout()
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
 
-        title = QLabel("Seteup location")
+        title = QLabel("Setup location")
         title.setProperty("class", "search-head")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)

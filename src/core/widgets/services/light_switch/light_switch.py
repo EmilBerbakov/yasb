@@ -146,6 +146,7 @@ class LightSwitchService(QObject):
 
     async def get_coords(self):
         try:
+            logger.info("Getting Geolocation")
             pos = await Geolocator().get_geoposition_async()
             self._latitude, self._longitude = [pos.coordinate.latitude, pos.coordinate.longitude]
         except asyncio.CancelledError:
