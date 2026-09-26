@@ -6,14 +6,19 @@ import re
 import win32gui
 import win32process
 from PIL import Image
-from PyQt6.QtCore import QElapsedTimer, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QElapsedTimer, QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QLabel, QWidget
+from PyQt6.QtWidgets import QLabel
 
 from core.events.service import EventService
 from core.events.win32 import WinEvent
 from core.utils.win32.app_icons import get_window_icon
-from core.utils.win32.utils import get_app_name_from_aumid, get_app_name_from_pid, get_hwnd_info, get_monitor_hwnd
+from core.utils.win32.utils import (
+    get_app_name_from_aumid,
+    get_app_name_from_pid,
+    get_hwnd_info,
+    get_widget_monitor_hwnd,
+)
 from core.validation.widgets.yasb.active_window import ActiveWindowConfig
 from core.widgets.base import BaseWidget
 from settings import APP_BAR_TITLE
@@ -215,6 +220,15 @@ class ActiveWindowWidget(BaseWidget):
         self._active_label = self.config.label_alt if self._show_alt else self.config.label
         self._update_text()
 
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            dpr = self.devicePixelRatioF()
+            if dpr != self.dpi:
+                self.dpi = dpr
+                if self._win_info:
+                    self._on_focus_change_event(self._win_info["hwnd"], WinEvent.WinEventOutOfContext)
+        return super().event(event)
+
     def _on_focus_change_event(self, hwnd: int, event: WinEvent) -> None:
         win_info = get_hwnd_info(hwnd)
         if (
@@ -227,7 +241,7 @@ class ActiveWindowWidget(BaseWidget):
             return
 
         monitor_name = win_info["monitor_info"].get("device", None)
-        widget_monitor = get_monitor_hwnd(int(QWidget.winId(self)))
+        widget_monitor = get_widget_monitor_hwnd(self)
 
         if (
             self.config.monitor_exclusive

@@ -4,7 +4,7 @@ import logging
 import win32con
 import win32gui
 from PIL import Image
-from PyQt6.QtCore import QEasingCurve, QMimeData, QPropertyAnimation, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QEvent, QMimeData, QPropertyAnimation, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCursor, QDrag, QImage, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
@@ -13,7 +13,7 @@ from core.utils.tooltip import set_tooltip
 from core.utils.utilities import refresh_widget_style
 from core.utils.win32.app_icons import get_stock_icon, get_window_icon
 from core.utils.win32.constants import KnownCLSID
-from core.utils.win32.utils import get_monitor_hwnd, get_monitor_info
+from core.utils.win32.utils import get_widget_monitor_hwnd
 from core.utils.win32.window_actions import (
     can_minimize,
     close_application,
@@ -469,7 +469,6 @@ class TaskbarWidget(BaseWidget):
         self._show_only_visible = self.config.show_only_visible
         self._ignore_apps = self.config.ignore_apps.model_dump()
 
-        self._widget_monitor_handle = None
         self._context_menu_open = False
 
         self._preview_enabled = self.config.preview.enabled
@@ -983,6 +982,34 @@ class TaskbarWidget(BaseWidget):
         except Exception:
             pass
 
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            dpr = self.devicePixelRatioF()
+            if dpr != self._dpi:
+                self._dpi = dpr
+                self._reload_icons()
+        return super().event(event)
+
+    def _reload_icons(self) -> None:
+        for hwnd, widget in list(self._hwnd_to_widget.items()):
+            if not is_valid_qobject(widget):
+                continue
+            icon_label = self._get_icon_label(widget)
+            if not icon_label:
+                continue
+            if hwnd < 0:
+                unique_id = widget.property("unique_id")
+                icon = self._load_cached_icon(unique_id) if unique_id else None
+            elif hwnd in self._window_buttons:
+                title, _, _, process = self._window_buttons[hwnd]
+                icon = self._get_app_icon(hwnd, title if process == "explorer.exe" else "")
+                self._window_buttons[hwnd] = (title, icon, hwnd, process)
+            else:
+                continue
+            # A grouped button is shared by its windows, only the representing window's icon is shown
+            if icon is not None and getattr(widget, "_hwnd", hwnd) == hwnd:
+                icon_label.setPixmap(icon)
+
     def showEvent(self, event):
         try:
             super().showEvent(event)
@@ -1289,16 +1316,10 @@ class TaskbarWidget(BaseWidget):
 
     def _get_widget_monitor_handle(self):
         """Get the monitor handle for this widget using win32 utilities."""
-        if self._widget_monitor_handle is None:
-            try:
-                self._widget_monitor_handle = get_monitor_hwnd(self.winId())
-                try:
-                    self._widget_monitor_info = get_monitor_info(self._widget_monitor_handle)
-                except Exception:
-                    self._widget_monitor_info = None
-            except Exception:
-                self._widget_monitor_handle = None
-        return self._widget_monitor_handle
+        try:
+            return get_widget_monitor_hwnd(self)
+        except Exception:
+            return None
 
     def _should_show_window(self, hwnd, window_data):
         """Determine if a window should be shown based on widget configuration"""
