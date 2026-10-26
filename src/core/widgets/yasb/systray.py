@@ -20,14 +20,13 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
 )
-from win32con import HWND_BROADCAST
 
 from core.bar_helper import AppBarManager
 from core.utils.system import app_data_path
 from core.utils.utilities import refresh_widget_style
-from core.utils.win32.bindings import IsWindow
-from core.utils.win32.bindings.user32 import RegisterWindowMessage, SendNotifyMessage
+from core.utils.win32.bindings.user32 import IsWindow, RegisterWindowMessage, SendNotifyMessage
 from core.utils.win32.constants import (
+    HWND_BROADCAST,
     NIF_GUID,
     NIF_ICON,
     NIF_INFO,
@@ -35,6 +34,7 @@ from core.utils.win32.constants import (
     NIF_STATE,
     NIF_TIP,
 )
+from core.utils.win32.undocumented import TRAY_BATTERY_ICON_GUID, TRAY_NETWORK_ICON_GUID, TRAY_VOLUME_ICON_GUID
 from core.utils.win32.utils import apply_qmenu_style, get_windows_host_arch, is_running_under_emulation
 from core.validation.widgets.yasb.systray import SystrayWidgetConfig
 from core.widgets.base import BaseWidget
@@ -45,10 +45,6 @@ from core.widgets.services.systray.systray_widget import DropWidget, IconState, 
 from core.widgets.services.systray.utils import hook_dll_exists
 
 logger = logging.getLogger("systray_widget")
-
-BATTERY_ICON_GUID = UUID("7820ae75-23e3-4229-82c1-e41cb67d5b9c")
-VOLUME_ICON_GUID = UUID("7820ae73-23e3-4229-82c1-e41cb67d5b9c")
-NETWORK_GUID = UUID("7820ae74-23e3-4229-82c1-e41cb67d5b9c")
 
 
 class SystrayMonitorThread(QThread):
@@ -87,6 +83,13 @@ class SystrayWidget(BaseWidget):
     _systray_about_to_quit_signal = None
 
     @classmethod
+    def systray_monitor_hwnd(cls) -> int | None:
+        client = cls._systray_client_instance
+        if isinstance(client, SystrayMonitor) and client.hwnd:
+            return client.hwnd
+        return None
+
+    @classmethod
     def get_monitor_instance(cls, hook: bool = False):
         """
         Since we don't want multiple systray monitors or hooks,
@@ -111,11 +114,11 @@ class SystrayWidget(BaseWidget):
 
         self.filtered_guids: set[UUID] = set()
         if not self.config.show_battery:
-            self.filtered_guids.add(BATTERY_ICON_GUID)
+            self.filtered_guids.add(TRAY_BATTERY_ICON_GUID)
         if not self.config.show_volume:
-            self.filtered_guids.add(VOLUME_ICON_GUID)
+            self.filtered_guids.add(TRAY_VOLUME_ICON_GUID)
         if not self.config.show_network:
-            self.filtered_guids.add(NETWORK_GUID)
+            self.filtered_guids.add(TRAY_NETWORK_ICON_GUID)
 
         self.hidden_icons_lower: list[str] = [h.lower() for h in self.config.hide_icons]
 
@@ -223,6 +226,7 @@ class SystrayWidget(BaseWidget):
 
         self.widget_layout.addWidget(self.widget_container)
 
+        QTimer.singleShot(0, self.load_state)
         if self.config.use_hook:
             self.setup_client()
             self.set_containers_visibility()
@@ -272,7 +276,6 @@ class SystrayWidget(BaseWidget):
                 logger.warning("Systray hook DLL missing. Reverting to legacy mode.")
                 self.config.use_hook = False
 
-        self.load_state()
         systray_client, systray_thread = SystrayWidget.get_monitor_instance(self.config.use_hook)
 
         systray_client.icon_modified.connect(self.on_icon_modified)
@@ -558,38 +561,42 @@ class SystrayWidget(BaseWidget):
 
         if self.config.show_in_popup:
             self._systray_popup.sort_unpinned(unpinned)
-        else:
-            for w in unpinned:
-                self.unpinned_layout.insertWidget(unpinned.index(w), w)
+        elif isinstance(self.unpinned_layout, QHBoxLayout):
+            for index, widget in enumerate(unpinned):
+                self.unpinned_layout.insertWidget(index, widget)
 
-        for w in pinned:
-            self.pinned_layout.insertWidget(pinned.index(w), w)
-        self.update_current_state()
+        if isinstance(self.pinned_layout, QHBoxLayout):
+            for index, widget in enumerate(pinned):
+                self.pinned_layout.insertWidget(index, widget)
 
     def update_current_state(self):
-        widgets_state: dict[str, Any] = {}
-        for w in self.icons:
-            if w.data is None or w.isHidden():
-                continue
-            if self.config.show_in_popup and not w.is_pinned:
-                # Grid layout: compute linear index from grid position
-                idx = self.unpinned_layout.indexOf(w)
-                index = idx if idx != -1 else self.pinned_layout.indexOf(w)
-            else:
-                index = self.unpinned_layout.indexOf(w)
-                if index == -1:
-                    index = self.pinned_layout.indexOf(w)
-            uuid = None if w.data.guid is None else str(w.data.guid)
-            widgets_state[uuid or w.data.exe_path] = IconState(
-                is_pinned=w.is_pinned,
-                index=index,
+        visible = {
+            True: self._visible_state_keys(self.pinned_layout),
+            False: self._visible_state_keys(self.unpinned_layout),
+        }
+        for is_pinned, keys in visible.items():
+            moved_out = set(visible[not is_pinned])
+            saved = sorted(
+                (k for k, s in self.current_state.items() if s.is_pinned == is_pinned and k not in moved_out),
+                key=lambda k: self.current_state[k].index,
             )
-        self.current_state |= widgets_state
+            on_screen = iter(keys)
+            order = [next(on_screen) if k in keys else k for k in saved]
+            order += on_screen
+            for index, key in enumerate(order):
+                self.current_state[key] = IconState(is_pinned=is_pinned, index=index)
+
+    def _visible_state_keys(self, layout: QLayout) -> list[str]:
+        keys = [
+            str(w.data.guid) if w.data.guid is not None else w.data.exe_path
+            for w in self.get_widgets_from_layout(layout)
+            if w.data is not None and not w.isHidden()
+        ]
+        return list(dict.fromkeys(keys))
 
     def save_state(self):
         """Save the current icon position and pinned state to disk."""
         self.update_current_state()
-        self.get_screen_id()
         file_path = app_data_path(f"systray_state_{self.screen_id}.json")
         logger.debug("Saving state to %s", file_path)
         saved_state: dict[str, Any] = {}
@@ -620,6 +627,7 @@ class SystrayWidget(BaseWidget):
             logger.debug("State file decode error. Ignoring.")
         except FileNotFoundError:
             logger.debug("State file not found.")
+        self.update_current_state()
 
     def get_screen_id(self):
         """Get the screen id for the current systray widget instance"""

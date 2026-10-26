@@ -1,9 +1,15 @@
 import logging
 import threading
+from collections.abc import Callable
+from typing import Any, Protocol, TypedDict
 
+from pycaw.api.audioclient import ISimpleAudioVolume
+from pycaw.api.endpointvolume import IAudioEndpointVolume
+from pycaw.api.mmdeviceapi import IMMDeviceEnumerator
 from pycaw.callbacks import AudioEndpointVolumeCallback, MMNotificationClient
 from pycaw.constants import DEVICE_STATE
 from pycaw.pycaw import AudioUtilities, EDataFlow, ERole
+from pycaw.utils import AudioDevice, AudioSession
 from PyQt6.QtCore import QObject, pyqtSignal
 
 # Blacklist of process names to exclude from audio menu
@@ -16,17 +22,32 @@ BLACKLISTED_PROCESSES = [
 ]
 
 
+class AudioOutputListener(Protocol):
+    def on_output_volume_changed(self) -> None: ...
+    def on_output_device_changed(self) -> None: ...
+
+
+class AudioSessionInfo(TypedDict):
+    name: str
+    app_name: str
+    volume_interface: ISimpleAudioVolume
+    session: AudioSession
+    pid: int
+
+
 class AudioOutputService(QObject):
     """Singleton service that manages shared pycaw instances for all volume widgets."""
 
-    _instance = None
+    _instance: AudioOutputService | None = None
+    _initialized: bool
     device_change_requested = pyqtSignal()
     volume_change_requested = pyqtSignal()
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            instance = super().__new__(cls)
+            instance._initialized = False
+            cls._instance = instance
         return cls._instance
 
     def __init__(self):
@@ -36,15 +57,15 @@ class AudioOutputService(QObject):
         self._initialized = True
         super().__init__()
 
-        self._widgets = []
-        self._volume_interface = None
-        self._enumerator = None
-        self._device_callback = None
-        self._volume_callback = None
+        self._widgets: list[AudioOutputListener] = []
+        self._volume_interface: IAudioEndpointVolume | None = None
+        self._enumerator: IMMDeviceEnumerator | None = None
+        self._device_callback: _SharedDeviceCallback | None = None
+        self._volume_callback: _SharedVolumeCallback | None = None
 
-        self._cached_speakers = None
-        self._cached_devices = None
-        self._cached_sessions = None
+        self._cached_speakers: AudioDevice | None = None
+        self._cached_devices: list[tuple[str, str | None]] | None = None
+        self._cached_sessions: list[AudioSession] | None = None
         self._cache_lock = threading.Lock()
         self._initializing = False
         self._speakers_checked = False
@@ -59,19 +80,17 @@ class AudioOutputService(QObject):
         self.volume_change_requested.connect(self._on_volume_change)
 
     def _initialize_audio(self):
-        """Fetch speakers, devices and sessions in background thread."""
+        """Fetch devices and sessions in background thread.
+
+        The volume interface is resolved on the main thread only: replacing it from here
+        would release the interface that holds the volume change callback.
+        """
         if self._initializing:
             return
         self._initializing = True
 
         def fetch():
             try:
-                if self._cached_speakers is None:
-                    speakers = AudioUtilities.GetSpeakers()
-                    self._cached_speakers = speakers
-                    if speakers and self._volume_interface is None:
-                        self._volume_interface = speakers.EndpointVolume
-
                 with self._cache_lock:
                     if self._cached_devices is None:
                         devices = AudioUtilities.GetAllDevices(
@@ -83,8 +102,8 @@ class AudioOutputService(QObject):
                     if self._cached_sessions is None:
                         self._cached_sessions = AudioUtilities.GetAllSessions()
 
-            except Exception:
-                pass
+            except Exception as e:
+                logging.debug("AudioOutputService prefetch failed: %s", e)
             finally:
                 self._initializing = False
 
@@ -98,7 +117,7 @@ class AudioOutputService(QObject):
             self._cached_sessions = None
             self._speakers_checked = False
 
-    def register_widget(self, widget):
+    def register_widget(self, widget: AudioOutputListener) -> None:
         """Add widget to the service."""
         if widget not in self._widgets:
             self._widgets.append(widget)
@@ -107,7 +126,7 @@ class AudioOutputService(QObject):
             self._initialize_audio()
             self._register_callbacks()
 
-    def unregister_widget(self, widget):
+    def unregister_widget(self, widget: AudioOutputListener) -> None:
         """Remove widget from service."""
         if widget in self._widgets:
             self._widgets.remove(widget)
@@ -116,83 +135,92 @@ class AudioOutputService(QObject):
 
     def _register_callbacks(self):
         """Hook up device and volume change notifications."""
-        try:
-            if self._enumerator and not self._device_callback:
-                self._device_callback = _SharedDeviceCallback(self)
-                self._enumerator.RegisterEndpointNotificationCallback(self._device_callback)
+        if self._enumerator and not self._device_callback:
+            try:
+                callback = _SharedDeviceCallback(self)
+                self._enumerator.RegisterEndpointNotificationCallback(callback)
+                self._device_callback = callback
+            except Exception as e:
+                logging.warning("Failed to register audio device callback: %s", e)
 
-            volume = self.get_volume_interface()
-            if volume and not self._volume_callback:
-                self._volume_callback = _SharedVolumeCallback(self)
-                volume.RegisterControlChangeNotify(self._volume_callback)
-        except Exception:
-            pass
+        self._register_volume_callback()
 
     def _unregister_callbacks(self):
         """Unhook device and volume notifications."""
-        try:
-            if self._device_callback and self._enumerator:
+        if self._device_callback and self._enumerator:
+            try:
                 self._enumerator.UnregisterEndpointNotificationCallback(self._device_callback)
-                self._device_callback = None
+            except Exception as e:
+                logging.debug("Failed to unregister audio device callback: %s", e)
+            self._device_callback = None
 
-            if self._volume_callback and self._volume_interface:
+        self._unregister_volume_callback()
+
+    def _register_volume_callback(self):
+        """Register for volume/mute changes on the current volume interface.
+
+        Notifications stop when that interface is released, so it must stay in
+        self._volume_interface for as long as the callback is registered.
+        """
+        if self._volume_callback:
+            return
+        volume = self.get_volume_interface()
+        if volume is None:
+            logging.debug("No output device, volume change callback not registered")
+            return
+        callback = _SharedVolumeCallback(self)
+        try:
+            volume.RegisterControlChangeNotify(callback)
+        except Exception as e:
+            logging.warning("Failed to register volume change callback: %s", e)
+            return
+        self._volume_callback = callback
+
+    def _unregister_volume_callback(self):
+        if self._volume_callback and self._volume_interface:
+            try:
                 self._volume_interface.UnregisterControlChangeNotify(self._volume_callback)
-                self._volume_callback = None
-        except Exception:
-            pass
+            except Exception as e:
+                logging.debug("Failed to unregister volume change callback: %s", e)
+        self._volume_callback = None
 
     def _on_volume_change(self):
         """Push volume updates to all widgets."""
         for widget in self._widgets[:]:
             try:
-                widget._update_label()
-                if hasattr(widget, "dialog") and widget.dialog and widget.dialog.isVisible():
-                    widget._update_slider_value()
+                widget.on_output_volume_changed()
             except:
                 pass
 
     def _on_device_change(self):
         """Handle audio device add/remove/change."""
         self._invalidate_cache()
-
-        if self._volume_callback and self._volume_interface:
-            try:
-                self._volume_interface.UnregisterControlChangeNotify(self._volume_callback)
-            except:
-                pass
-            self._volume_callback = None
-
+        self._unregister_volume_callback()
         self._volume_interface = None
 
         if self._widgets:
-            volume = self.get_volume_interface()
-            if volume:
-                try:
-                    self._volume_callback = _SharedVolumeCallback(self)
-                    volume.RegisterControlChangeNotify(self._volume_callback)
-                except Exception:
-                    pass
+            self._register_volume_callback()
 
         self._initialize_audio()
 
         for widget in self._widgets[:]:
             try:
-                widget._reinitialize_audio()
+                widget.on_output_device_changed()
             except:
                 pass
 
-    def get_volume_interface(self):
+    def get_volume_interface(self) -> IAudioEndpointVolume | None:
         """Get volume control interface."""
         if self._volume_interface is None:
             speakers = self.get_speakers()
             if speakers:
                 try:
                     self._volume_interface = speakers.EndpointVolume
-                except:
-                    pass
+                except Exception as e:
+                    logging.warning("Failed to get volume interface: %s", e)
         return self._volume_interface
 
-    def get_all_devices(self):
+    def get_all_devices(self) -> list[tuple[str, str | None]]:
         """List all active audio output devices."""
         with self._cache_lock:
             if self._cached_devices is not None:
@@ -209,7 +237,7 @@ class AudioOutputService(QObject):
         except Exception:
             return []
 
-    def get_speakers(self):
+    def get_speakers(self) -> AudioDevice | None:
         """Get default audio output device."""
         if self._cached_speakers is not None:
             return self._cached_speakers
@@ -221,10 +249,11 @@ class AudioOutputService(QObject):
             result = AudioUtilities.GetSpeakers()
             self._cached_speakers = result
             return result
-        except Exception:
+        except Exception as e:
+            logging.debug("No default output device: %s", e)
             return None
 
-    def get_all_sessions(self):
+    def get_all_sessions(self) -> list[AudioSession]:
         """Get audio sessions."""
         with self._cache_lock:
             if self._cached_sessions is not None:
@@ -248,7 +277,7 @@ class AudioOutputService(QObject):
             pass
         return None
 
-    def set_default_device(self, device_id):
+    def set_default_device(self, device_id: str) -> bool:
         """Switch default audio output."""
         try:
             AudioUtilities.SetDefaultDevice(device_id, roles=[ERole.eConsole])
@@ -257,20 +286,25 @@ class AudioOutputService(QObject):
             logging.error("Failed to set default audio device: %s", e)
             return False
 
-    def get_active_audio_sessions(self, get_app_name_callback=None, format_name_callback=None):
+    def get_active_audio_sessions(
+        self,
+        get_app_name_callback: Callable[[int], str | None] | None = None,
+        format_name_callback: Callable[[str], str] | None = None,
+    ) -> list[AudioSessionInfo]:
         """Get running apps with audio, excluding system processes."""
-        sessions = []
-        seen = {}
+        sessions: list[AudioSessionInfo] = []
+        seen: dict[tuple[int, str], bool] = {}
 
         try:
             if not self.get_speakers():
                 return sessions
 
             for session in self.get_all_sessions():
-                if not session.Process or not session.Process.name():
+                process = session.Process
+                if not process or not process.name():
                     continue
 
-                proc_name = session.Process.name()
+                proc_name = process.name()
                 if proc_name.lower() in [p.lower() for p in BLACKLISTED_PROCESSES]:
                     continue
 
@@ -287,14 +321,14 @@ class AudioOutputService(QObject):
                 except:
                     continue
 
-                app_name = None
+                app_name: str | None = None
                 if session.DisplayName:
                     name = session.DisplayName.strip()
                     if name and not name.startswith("@") and not name.startswith("ms-resource:"):
                         app_name = name
 
                 if not app_name and get_app_name_callback:
-                    app_name = get_app_name_callback(session.Process.pid)
+                    app_name = get_app_name_callback(process.pid)
                     if app_name:
                         app_name = app_name.strip() or None
 
@@ -307,7 +341,7 @@ class AudioOutputService(QObject):
                         "app_name": app_name,
                         "volume_interface": session.SimpleAudioVolume,
                         "session": session,
-                        "pid": session.Process.pid,
+                        "pid": process.pid,
                     }
                 )
 
@@ -321,24 +355,28 @@ class AudioOutputService(QObject):
 class _SharedVolumeCallback(AudioEndpointVolumeCallback):
     """Forwards volume changes to the service."""
 
-    def __init__(self, service):
+    def __init__(self, service: AudioOutputService):
         super().__init__()
         self.service = service
 
-    def on_notify(self, new_volume, new_mute, event_context, channels, channel_volumes):
+    def on_notify(
+        self, new_volume: float, new_mute: int, event_context: Any, channels: int, channel_volumes: list[float]
+    ) -> None:
         self.service.volume_change_requested.emit()
 
 
 class _SharedDeviceCallback(MMNotificationClient):
     """Forwards device changes to the service."""
 
-    def __init__(self, service):
+    def __init__(self, service: AudioOutputService):
         super().__init__()
         self.service = service
-        self._last_device_id = None
-        self._last_state_changes = {}
+        self._last_device_id: str | None = None
+        self._last_state_changes: dict[str, int] = {}
 
-    def on_default_device_changed(self, flow, flow_id, role, role_id, default_device_id):
+    def on_default_device_changed(
+        self, flow: str, flow_id: int, role: str, role_id: int, default_device_id: str | None
+    ) -> None:
         if flow_id != EDataFlow.eRender.value or role_id != ERole.eConsole.value:
             return
         if default_device_id == self._last_device_id:
@@ -346,7 +384,7 @@ class _SharedDeviceCallback(MMNotificationClient):
         self._last_device_id = default_device_id
         self.service.device_change_requested.emit()
 
-    def on_device_state_changed(self, device_id, new_state, new_state_id):
+    def on_device_state_changed(self, device_id: str, new_state: str, new_state_id: int) -> None:
         if new_state_id not in (DEVICE_STATE.DISABLED.value, DEVICE_STATE.ACTIVE.value, DEVICE_STATE.UNPLUGGED.value):
             return
         if self._last_state_changes.get(device_id) == new_state_id:
