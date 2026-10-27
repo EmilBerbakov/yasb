@@ -36,7 +36,7 @@ from win32con import (
 from winrt.windows.devices.geolocation import Geolocator
 
 from core.config import HOME_CONFIGURATION_DIR
-from core.utils.win32.bindings import SendMessageTimeoutW
+from core.utils.win32.bindings.user32 import SendMessageTimeoutW
 from core.validation.widgets.yasb.light_switch import LightSwitchOptions
 
 logger = logging.getLogger("light_switch")
